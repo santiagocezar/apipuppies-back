@@ -1,68 +1,67 @@
-import { Hono } from "hono";
-import db, { breeds, pets } from "@db";
+import db, { pets } from "@db";
 import { eq } from "drizzle-orm";
-import { generateRest } from "../utils/rest";
 import z from "zod";
-import {
-    createInsertSchema,
-    createSelectSchema,
-    createUpdateSchema,
-} from "drizzle-zod";
+import Elysia, { status, t } from "elysia";
+import { firstOr } from "./utils";
+import { getUserId } from "./auth";
 
-const selectSchema = createSelectSchema(pets, {
-    birthday: z.coerce.date(),
-});
-const insertSchema = createInsertSchema(pets, {
-    birthday: z.coerce.date(),
-});
-const updateSchema = createUpdateSchema(pets, {
-    birthday: z.coerce.date(),
-});
-
-const desc = generateRest({
-    name: "mascota",
-    namePlural: "mascotas",
-    selectSchema,
-    insertSchema,
-    updateSchema,
+const insertSchema = z.object({
+    // id: z.int().primaryKey({ autoIncrement: true }),
+    name: z.string(),
+    img: z.string().nullable(),
+    birthday: z.coerce.date().nullable(),
+    weight: z.number(),
+    sex: z.literal(["f", "m"]),
+    exercise: z.int(),
+    breedId: z.int(),
+    ownerId: z.int().nullable(),
 });
 
-const app = new Hono()
-    .get("/", desc.list, (c) =>
+const updateSchema = insertSchema.partial();
+
+// TODO: verificar que las rutinas sean del dueño
+
+export const petsApp = new Elysia({ prefix: "/pets" })
+    .use(getUserId)
+    .get("/", ({ user }) =>
         db
             .select()
             .from(pets)
-            .then((v) => c.json(v))
+            .where(eq(pets.ownerId, user))
+            .then((v) => v ?? status(404))
     )
-    .get("/:id", desc.detail, (c) =>
-        db
-            .select()
-            .from(pets)
-            .limit(1)
-            .where(eq(pets.id, parseInt(c.req.param("id"))))
-            .then((v) => c.json(v[0], v[0] ? 200 : 404))
+    .post(
+        "/",
+        ({ body: { ownerId, ...body }, user }) =>
+            db
+                .insert(pets)
+                .values({
+                    ...body,
+                    ownerId: user,
+                })
+                .returning()
+                .then(firstOr(201)),
+        { body: insertSchema }
     )
-    .delete("/:id", desc.delete, (c) =>
-        db
-            .delete(pets)
-            .where(eq(pets.id, parseInt(c.req.param("id"))))
-            .returning()
-            .then((v) => c.json(v[0], v[0] ? 200 : 404))
+    .guard({
+        params: t.Object({
+            id: t.Number(),
+        }),
+    })
+    .get("/:id", ({ params: { id } }) =>
+        db.select().from(pets).limit(1).where(eq(pets.id, id)).then(firstOr())
     )
-    .post("/", desc.create, desc.createValidator, (c) =>
-        db
-            .insert(pets)
-            .values(c.req.valid("json"))
-            .returning()
-            .then((v) => c.json(v[0], 201))
+    .delete("/:id", ({ params: { id } }) =>
+        db.delete(pets).where(eq(pets.id, id)).returning().then(firstOr())
     )
-    .patch("/:id", desc.update, desc.updateValidator, (c) =>
-        db
-            .update(pets)
-            .set(c.req.valid("json"))
-            .where(eq(pets.id, parseInt(c.req.param("id"))))
-            .returning()
-            .then((v) => c.json(v[0], v[0] ? 200 : 404))
+    .patch(
+        "/:id",
+        ({ params: { id }, body: { ownerId, ...body } }) =>
+            db
+                .update(pets)
+                .set(body)
+                .where(eq(pets.id, id))
+                .returning()
+                .then(firstOr()),
+        { body: updateSchema }
     );
-
-export default app;

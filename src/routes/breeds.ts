@@ -1,51 +1,54 @@
-import { Hono } from "hono";
-import db, { breeds } from "@db";
+import db, { breeds, users } from "@db";
 import { eq } from "drizzle-orm";
-import { generateRestFromTable } from "../utils/rest";
+import { createInsertSchema, createUpdateSchema } from "drizzle-zod";
+import Elysia, { status, t } from "elysia";
+import { firstOr } from "./utils";
+// import { generateRestFromTable } from "../utils/rest";
 
-const desc = generateRestFromTable({
-    name: "raza",
-    namePlural: "razas",
-    table: breeds,
-    create: "El nombre debe ser único",
-});
+// const desc = generateRestFromTable({
+//     name: "raza",
+//     namePlural: "razas",
+//     table: breeds,
+//     create: "El nombre debe ser único",
+// });
 
-const app = new Hono()
-    .get("/", desc.list, (c) =>
+export const breedsApp = new Elysia({ prefix: "/breeds" })
+    .get("/", () =>
         db
             .select()
             .from(breeds)
-            .then((v) => c.json(v))
+            .then((v) => v ?? status(404))
     )
-    .get("/:id", desc.detail, (c) =>
+    .post(
+        "/",
+        ({ body }) =>
+            db.insert(breeds).values(body).returning().then(firstOr(201)),
+        { body: createInsertSchema(breeds) }
+    )
+    .guard({
+        params: t.Object({
+            id: t.Number(),
+        }),
+    })
+    .get("/:id", ({ params: { id } }) =>
         db
             .select()
             .from(breeds)
             .limit(1)
-            .where(eq(breeds.id, parseInt(c.req.param("id"))))
-            .then((v) => c.json(v[0], v[0] ? 200 : 404))
+            .where(eq(breeds.id, id))
+            .then(firstOr())
     )
-    .delete("/:id", desc.delete, (c) =>
-        db
-            .delete(breeds)
-            .where(eq(breeds.id, parseInt(c.req.param("id"))))
-            .returning()
-            .then((v) => c.json(v[0], v[0] ? 200 : 404))
+    .delete("/:id", ({ params: { id } }) =>
+        db.delete(breeds).where(eq(breeds.id, id)).returning().then(firstOr())
     )
-    .post("/", desc.create, desc.createValidator, (c) =>
-        db
-            .insert(breeds)
-            .values(c.req.valid("json"))
-            .returning()
-            .then((v) => c.json(v[0], 201))
-    )
-    .patch("/:id", desc.update, desc.updateValidator, (c) =>
-        db
-            .update(breeds)
-            .set(c.req.valid("json"))
-            .where(eq(breeds.id, parseInt(c.req.param("id"))))
-            .returning()
-            .then((v) => c.json(v[0], v[0] ? 200 : 404))
+    .patch(
+        "/:id",
+        ({ params: { id }, body }) =>
+            db
+                .update(breeds)
+                .set(body)
+                .where(eq(breeds.id, id))
+                .returning()
+                .then(firstOr()),
+        { body: createUpdateSchema(breeds) }
     );
-
-export default app;

@@ -1,61 +1,49 @@
-import { Hono, type MiddlewareHandler } from "hono";
-import db, { users } from "@db";
+import { generateKeyPair, jwtVerify, SignJWT } from "jose";
+import Elysia, { status, t } from "elysia";
+import z from "zod";
+import db, { sessions, users } from "@db";
 import { eq } from "drizzle-orm";
-import { generateRestFromTable } from "../utils/rest";
-import { describeRoute, resolver, validator } from "hono-openapi";
-import { compare } from "bcrypt";
-import z, { ZodError } from "zod";
-import { jwt, sign, type JwtVariables } from "hono/jwt";
-import { generateKeyPairSync } from "node:crypto";
-import { sessions } from "@db/schema/jwt";
-import { HTTPException } from "hono/http-exception";
+import { firstOr } from "./utils";
+import { profile } from "node:console";
 import { createInsertSchema } from "drizzle-zod";
+import type { webcrypto } from "node:crypto";
+import { compare } from "../utils/password";
 
-const { privateKey, publicKey } = generateKeyPairSync("rsa", {
-    modulusLength: 2048,
-    publicKeyEncoding: {
-        type: "spki",
-        format: "pem",
-    },
-    privateKeyEncoding: {
-        type: "pkcs8",
-        format: "pem",
-    },
+const { privateKey, publicKey } = await generateKeyPair("RS512");
+
+async function toPem(key: webcrypto.CryptoKey) {
+    const body = Buffer.from(
+        await crypto.subtle.exportKey("spki", key)
+    ).toString("base64");
+
+    return `-----BEGIN PUBLIC KEY-----\n${body}\n-----END PUBLIC KEY-----`;
+}
+
+console.log(await toPem(publicKey));
+
+const Payload = z.object({
+    type: z.literal(["refresh", "access"]),
+    jti: z.string(),
+    user: z.int(),
 });
-
-export const jwtMiddleware = jwt({
-    secret: privateKey,
-    alg: "RS512",
-});
-
-const User = createInsertSchema(users);
+type Payload = z.output<typeof Payload>;
 
 const LoginInfo = z.object({
     username: z.string(),
     password: z.string(),
 });
 
-const BasePayload = z.object({
-    exp: z.int(),
-    user: z.int(),
-});
+const User = createInsertSchema(users);
 
-const AccessPayload = BasePayload.extend({
-    type: z.literal("access"),
-});
+// const p = new Uint8Array(16);
+// crypto.getRandomValues(p);
 
-const RefreshPayload = BasePayload.extend({
-    type: z.literal("refresh"),
-    jti: z.string(),
-});
-
-// type Role = z.output<typeof Role>;
-type AccessPayload = z.output<typeof AccessPayload>;
-type RefreshPayload = z.output<typeof RefreshPayload>;
-
-const ADMIN_PASSWD = privateKey.slice(0, 24);
+const ADMIN_PASSWD = "admin123"; //p.toHex();
 
 console.log(`Admin Password: ${ADMIN_PASSWD}`);
+
+const ACCESS_EXP = 60 * 15; // 15 minutos
+const REFRESH_EXP = 60 * 60 * 24 * 7; // 7 días
 
 async function auth(
     username: string,
@@ -77,74 +65,118 @@ async function auth(
     return null;
 }
 
-const ACCESS_EXP = 60 * 15; // 15 minutos
-const REFRESH_EXP = 60 * 60 * 24 * 7; // 7 días
+async function jwtVerifyFromHeader(authorization: string | undefined) {
+    const token = authorization?.split("Bearer ", 2)[1];
+    if (!token) return;
 
-const app = new Hono<{ Variables: JwtVariables }>()
-    .post("/login", validator("json", LoginInfo), async (c) => {
-        const data = c.req.valid("json");
+    const res = await jwtVerify(token, publicKey, {});
 
-        const res = await auth(data.username, data.password);
+    console.log(res.payload);
 
-        if (res !== null) {
-            const user = res;
-            const jti = new Uint8Array(32);
-            crypto.getRandomValues(jti);
+    const { data: payload } = Payload.safeParse(res.payload);
+    if (!payload) return;
 
-            const now = new Date();
-            const accessExp = Math.floor(now.getTime() / 1000 + ACCESS_EXP);
-            const refreshExp = Math.floor(now.getTime() / 1000 + REFRESH_EXP);
+    return payload;
+}
 
-            const [access, refresh] = await Promise.all([
-                sign(
-                    <AccessPayload>{
+export const authApp = new Elysia({ name: "auth", prefix: "/auth" })
+    .post(
+        "/login",
+        async ({ body: { username, password } }) => {
+            const res = await auth(username, password);
+
+            if (res !== null) {
+                const user = res;
+                const jti = new Uint8Array(32);
+                crypto.getRandomValues(jti);
+
+                const now = new Date();
+
+                const [access, refresh] = await Promise.all([
+                    new SignJWT(<Payload>{
                         type: "access",
                         user,
-                        exp: accessExp,
-                    },
-                    privateKey,
-                    "RS512"
-                ),
-                sign(
-                    <RefreshPayload>{
+                        jti: jti.toHex(),
+                    })
+                        .setExpirationTime("15m")
+                        .setIssuedAt()
+                        .setProtectedHeader({ alg: "RS512" })
+                        .sign(privateKey),
+                    new SignJWT(<Payload>{
                         type: "refresh",
                         user,
                         jti: jti.toHex(),
-                        exp: refreshExp,
-                    },
-                    privateKey,
-                    "RS512"
-                ),
-            ]);
+                    })
+                        .setExpirationTime("7d")
+                        .setIssuedAt()
+                        .setProtectedHeader({ alg: "RS512" })
+                        .sign(privateKey),
+                ]);
 
-            await db.insert(sessions).values({
-                id: Buffer.from(jti),
-                created: now,
-                expires: new Date(refreshExp * 1000),
-                revoked: false,
+                await db.insert(sessions).values({
+                    id: Buffer.from(jti),
+                    created: now,
+                    refresh,
+                    active: true,
+                });
+
+                return { access, refresh };
+            }
+        },
+        { body: LoginInfo }
+    )
+    .post(
+        "/register",
+        async ({ body }) =>
+            db
+                .insert(users)
+                .values(body)
+                .returning()
+                .then(firstOr(200, 400, "Couldn't create user")),
+        { body: User }
+    )
+    .post("/refresh", async ({ headers: { authorization } }) => {
+        const payload = await jwtVerifyFromHeader(authorization);
+        if (!payload || payload.type !== "refresh")
+            return status(401, {
+                success: false,
+                message: "Unauthorized",
             });
 
-            return c.json({ access, refresh });
-        }
-    })
-    .post("/register", validator("json", User), async (c) =>
-        db
-            .insert(users)
-            .values(c.req.valid("json"))
-            .returning()
-            .then((v) => c.json(v[0], 201))
-    )
-    .post("/revoke", jwtMiddleware, async (c) => {
-        let payload: RefreshPayload;
+        const jti = new Uint8Array(32);
 
-        try {
-            payload = RefreshPayload.parse(c.var.jwtPayload);
-        } catch (err) {
-            if (err instanceof ZodError) {
-                throw new HTTPException(400);
-            }
-            throw err;
-        }
+        jti.setFromHex(payload.jti);
+
+        const [{ active } = {}] = await db
+            .select({ active: sessions.active })
+            .from(sessions)
+            .where(eq(sessions.id, Buffer.from(jti)));
+
+        if (!active)
+            return status(401, {
+                success: false,
+                message: "Unauthorized",
+            });
+
+        const access = await new SignJWT(<Payload>{
+            type: "access",
+            user: payload.user,
+            jti: payload.jti,
+        })
+            .setExpirationTime("15m")
+            .setIssuedAt()
+            .setProtectedHeader({ alg: "RS512" })
+            .sign(privateKey);
+
+        return { access };
+    })
+    .post("/revoke", async ({ headers: { authorization } }) => {
+        const payload = await jwtVerifyFromHeader(authorization);
+        if (!payload)
+            return status(401, {
+                success: false,
+                message: "Unauthorized",
+            });
 
         const jti = new Uint8Array(32);
 
@@ -153,11 +185,43 @@ const app = new Hono<{ Variables: JwtVariables }>()
         await db
             .update(sessions)
             .set({
-                revoked: true,
+                active: false,
             })
             .where(eq(sessions.id, Buffer.from(jti)));
 
-        return c.json({ ok: true });
+        return "Token revoked";
+    })
+    .macro({
+        isSignIn(enabled: boolean) {
+            if (!enabled) return;
+
+            return {
+                async beforeHandle({ status, headers: { authorization } }) {
+                    const payload = await jwtVerifyFromHeader(authorization);
+                    if (!payload)
+                        return status(401, {
+                            success: false,
+                            message: "Unauthorized",
+                        });
+
+                    // return {
+                    //     resolve() {
+                    //         return { user: payload.user };
+                    //     },
+                    // };
+                },
+            };
+        },
     });
 
-export default app;
+export const getUserId = new Elysia()
+    .use(authApp)
+    .guard({
+        isSignIn: true,
+    })
+    .resolve(({ headers: { authorization } }) =>
+        jwtVerifyFromHeader(authorization).then((payload) => ({
+            user: payload!.user,
+        }))
+    )
+    .as("scoped");

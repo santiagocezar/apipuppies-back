@@ -10,14 +10,17 @@ export const routines = sqliteTable("routines", {
     servingSize: int().notNull(),
     /** diario, lista de segundos desde las 00:00 */
     schedule: text({ mode: "json" }).$type<number[]>().notNull(),
+    /** zona horaria, diferencia con UTC en segundos */
+    utcOffset: int().notNull(),
     petId: int().notNull(),
 });
 
-export const routinesRelations = relations(routines, ({ one }) => ({
+export const routinesRelations = relations(routines, ({ one, many }) => ({
     pet: one(pets, {
         fields: [routines.petId],
         references: [pets.id],
     }),
+    routines: many(routines),
 }));
 
 export type RoutineInsert = typeof routines.$inferInsert;

@@ -4,7 +4,10 @@
     "type": "module",
     "private": true,
     "scripts": {
-        "dev": "bun run --hot src/index.ts"
+        "dev": "tsx watch src/index.ts",
+        "dev-bun": "bun run --hot src/index.ts",
+        "build": "tsc src/index.ts --outDir dist",
+        "start": "NODE_ENV=production node dist/index.js"
     },
     "devDependencies": {
         "@types/bcrypt": "^6.0.0",
@@ -16,15 +19,16 @@
         "typescript": "^5"
     },
     "dependencies": {
-        "@hono/standard-validator": "^0.1.5",
+        "@elysiajs/jwt": "^1.4.0",
+        "@elysiajs/node": "^1.4.0",
+        "@elysiajs/openapi": "^1.4.2",
         "@libsql/client": "^0.15.15",
-        "@scalar/hono-api-reference": "^0.9.18",
         "bcrypt": "^6.0.0",
         "dotenv": "^17.2.2",
         "drizzle-orm": "^0.44.5",
         "drizzle-zod": "^0.8.3",
-        "hono": "^4.9.6",
-        "hono-openapi": "^1.0.6",
+        "elysia": "^1.4.5",
+        "jose": "^6.1.0",
         "zod": "^4.1.8",
         "zod-openapi": "^5.4.1"
     }
