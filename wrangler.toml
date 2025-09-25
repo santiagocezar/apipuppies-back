@@ -1,0 +1,10 @@
+main = "src/index.ts"
+name = "apipuppies"
+compatibility_date = "2025-06-01"
+compatibility_flags = [ "nodejs_compat" ]
+
+[[d1_databases]]
+binding = "apipuppies_db"
+database_name = "apipuppies_db"
+database_id = "f5827704-c4a5-4039-bcce-f887c7a88671"
+migrations_dir = "drizzle/migrations"

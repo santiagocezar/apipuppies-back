@@ -1,1 +1,0 @@
-CREATE UNIQUE INDEX `breeds_name_unique` ON `breeds` (`name`);

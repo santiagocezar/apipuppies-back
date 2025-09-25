@@ -1,25 +1,13 @@
-import { generateKeyPair, jwtVerify, SignJWT } from "jose";
+import { sign, verify } from "jsonwebtoken";
 import Elysia, { status, t } from "elysia";
 import z from "zod";
-import db, { sessions, users } from "@db";
+import { sessions, users } from "@db";
 import { eq } from "drizzle-orm";
 import { firstOr } from "./utils";
-import { profile } from "node:console";
 import { createInsertSchema } from "drizzle-zod";
-import type { webcrypto } from "node:crypto";
 import { compare } from "../utils/password";
-
-const { privateKey, publicKey } = await generateKeyPair("RS512");
-
-async function toPem(key: webcrypto.CryptoKey) {
-    const body = Buffer.from(
-        await crypto.subtle.exportKey("spki", key)
-    ).toString("base64");
-
-    return `-----BEGIN PUBLIC KEY-----\n${body}\n-----END PUBLIC KEY-----`;
-}
-
-console.log(await toPem(publicKey));
+import { keychain } from "../lib/key";
+import { database, type Database } from "../lib/dbinstance";
 
 const Payload = z.object({
     type: z.literal(["refresh", "access"]),
@@ -46,9 +34,11 @@ const ACCESS_EXP = 60 * 15; // 15 minutos
 const REFRESH_EXP = 60 * 60 * 24 * 7; // 7 días
 
 async function auth(
+    db: Database,
     username: string,
     password: string
 ): Promise<number | null> {
+    console.log({ username, password });
     if (username === "admin" && password === ADMIN_PASSWD) {
         return 0;
     }
@@ -65,25 +55,60 @@ async function auth(
     return null;
 }
 
-async function jwtVerifyFromHeader(authorization: string | undefined) {
+function jwtVerifyFromHeader(
+    authorization: string | undefined,
+    secret: string
+) {
     const token = authorization?.split("Bearer ", 2)[1];
     if (!token) return;
 
-    const res = await jwtVerify(token, publicKey, {});
+    const res = verify(token, secret);
 
-    console.log(res.payload);
+    console.log({ res });
 
-    const { data: payload } = Payload.safeParse(res.payload);
+    const { data: payload } = Payload.safeParse(res);
     if (!payload) return;
 
     return payload;
 }
 
+function forgeAccessToken(user: number, jti: Uint8Array, secret: string) {
+    return sign(
+        <Payload>{
+            type: "access",
+            user,
+            jti: jti.toHex(),
+        },
+        secret,
+        {
+            expiresIn: "15m",
+        }
+    );
+}
+
+function forgeRefreshToken(user: number, jti: Uint8Array, secret: string) {
+    return sign(
+        <Payload>{
+            type: "refresh",
+            user,
+            jti: jti.toHex(),
+        },
+        secret,
+        {
+            expiresIn: "7d",
+        }
+    );
+}
+
 export const authApp = new Elysia({ name: "auth", prefix: "/auth" })
+    .use(keychain())
+    .use(database())
     .post(
         "/login",
-        async ({ body: { username, password } }) => {
-            const res = await auth(username, password);
+        async ({ db, body, secret }) => {
+            console.log(body);
+            const { username, password } = body;
+            const res = await auth(db, username, password);
 
             if (res !== null) {
                 const user = res;
@@ -92,42 +117,31 @@ export const authApp = new Elysia({ name: "auth", prefix: "/auth" })
 
                 const now = new Date();
 
-                const [access, refresh] = await Promise.all([
-                    new SignJWT(<Payload>{
-                        type: "access",
-                        user,
-                        jti: jti.toHex(),
-                    })
-                        .setExpirationTime("15m")
-                        .setIssuedAt()
-                        .setProtectedHeader({ alg: "RS512" })
-                        .sign(privateKey),
-                    new SignJWT(<Payload>{
-                        type: "refresh",
-                        user,
-                        jti: jti.toHex(),
-                    })
-                        .setExpirationTime("7d")
-                        .setIssuedAt()
-                        .setProtectedHeader({ alg: "RS512" })
-                        .sign(privateKey),
-                ]);
+                const access = forgeAccessToken(user, jti, secret);
+                const refresh = forgeRefreshToken(user, jti, secret);
 
-                await db.insert(sessions).values({
-                    id: Buffer.from(jti),
-                    created: now,
-                    refresh,
-                    active: true,
-                });
+                try {
+                    await db.insert(sessions).values({
+                        id: Buffer.from(jti),
+                        created: now,
+                        refresh,
+                        active: true,
+                    });
+                } catch (error) {
+                    console.error(error);
+                    throw error;
+                }
 
                 return { access, refresh };
+            } else {
+                return status(401);
             }
         },
         { body: LoginInfo }
     )
     .post(
         "/register",
-        async ({ body }) =>
+        async ({ db, body }) =>
             db
                 .insert(users)
                 .values(body)
@@ -135,8 +149,8 @@ export const authApp = new Elysia({ name: "auth", prefix: "/auth" })
                 .then(firstOr(200, 400, "Couldn't create user")),
         { body: User }
     )
-    .post("/refresh", async ({ headers: { authorization } }) => {
-        const payload = await jwtVerifyFromHeader(authorization);
+    .post("/refresh", async ({ db, headers: { authorization }, secret }) => {
+        const payload = jwtVerifyFromHeader(authorization, secret);
         if (!payload || payload.type !== "refresh")
             return status(401, {
                 success: false,
@@ -158,20 +172,12 @@ export const authApp = new Elysia({ name: "auth", prefix: "/auth" })
                 message: "Unauthorized",
             });
 
-        const access = await new SignJWT(<Payload>{
-            type: "access",
-            user: payload.user,
-            jti: payload.jti,
-        })
-            .setExpirationTime("15m")
-            .setIssuedAt()
-            .setProtectedHeader({ alg: "RS512" })
-            .sign(privateKey);
+        const access = forgeAccessToken(payload.user, jti, secret);
 
         return { access };
     })
-    .post("/revoke", async ({ headers: { authorization } }) => {
-        const payload = await jwtVerifyFromHeader(authorization);
+    .post("/revoke", async ({ db, headers: { authorization }, secret }) => {
+        const payload = jwtVerifyFromHeader(authorization, secret);
         if (!payload)
             return status(401, {
                 success: false,
@@ -192,36 +198,31 @@ export const authApp = new Elysia({ name: "auth", prefix: "/auth" })
         return "Token revoked";
     })
     .macro({
-        isSignIn(enabled: boolean) {
-            if (!enabled) return;
+        isSignIn: {
+            resolve({ status, headers: { authorization }, secret }) {
+                const payload = jwtVerifyFromHeader(authorization, secret);
+                if (!payload)
+                    return status(401, {
+                        success: false,
+                        message: "Unauthorized",
+                    });
 
-            return {
-                async beforeHandle({ status, headers: { authorization } }) {
-                    const payload = await jwtVerifyFromHeader(authorization);
-                    if (!payload)
-                        return status(401, {
-                            success: false,
-                            message: "Unauthorized",
-                        });
-
-                    // return {
-                    //     resolve() {
-                    //         return { user: payload.user };
-                    //     },
-                    // };
-                },
-            };
+                return {
+                    user: payload.user,
+                };
+            },
         },
     });
 
-export const getUserId = new Elysia()
-    .use(authApp)
-    .guard({
-        isSignIn: true,
-    })
-    .resolve(({ headers: { authorization } }) =>
-        jwtVerifyFromHeader(authorization).then((payload) => ({
-            user: payload!.user,
-        }))
-    )
-    .as("scoped");
+// export const getUserId = new Elysia()
+//     .use(authApp)
+//     .guard({
+//         isSignIn: true,
+//     })
+//     .resolve(({ headers: { authorization }, secret }) => {
+//         const payload = jwtVerifyFromHeader(authorization, secret);
+//         return {
+//             user: payload!.user,
+//         };
+//     })
+//     .as("scoped");

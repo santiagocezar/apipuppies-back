@@ -1,4 +1,4 @@
-import db, { breeds, pets, routines, users } from "@db";
+import { breeds, pets, routines, users } from "@db";
 import { and, desc, eq, gt, gte, lte } from "drizzle-orm";
 import { createInsertSchema, createUpdateSchema } from "drizzle-zod";
 import Elysia, { status, t } from "elysia";
@@ -7,6 +7,7 @@ import z from "zod";
 import { devices } from "@db/schema/devices";
 import { activities } from "@db/schema/activities";
 import type { BatchItem } from "drizzle-orm/batch";
+import { database } from "../lib/dbinstance";
 // import { generateRestFromTable } from "../utils/rest";
 
 // const desc = generateRestFromTable({
@@ -31,9 +32,10 @@ function isTuple<T extends unknown>(array: T[]): array is [T, ...T[]] {
 }
 
 export const deviceApp = new Elysia({ prefix: "/device" })
+    .use(database())
     .post(
         "/report",
-        async ({ body: { start, devId, routineId, plate, tank } }) => {
+        async ({ db, body: { start, devId, routineId, plate, tank } }) => {
             const [dev] = await db
                 .update(devices)
                 .set({
@@ -98,7 +100,7 @@ export const deviceApp = new Elysia({ prefix: "/device" })
     )
     .get(
         "/status/:id",
-        async ({ params: { id } }) => {
+        async ({ db, params: { id } }) => {
             const [routine] = await db
                 .select()
                 .from(routines)

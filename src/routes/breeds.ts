@@ -1,8 +1,9 @@
-import db, { breeds, users } from "@db";
+import { breeds, users } from "@db";
 import { eq } from "drizzle-orm";
 import { createInsertSchema, createUpdateSchema } from "drizzle-zod";
 import Elysia, { status, t } from "elysia";
 import { firstOr } from "./utils";
+import { database } from "../lib/dbinstance";
 // import { generateRestFromTable } from "../utils/rest";
 
 // const desc = generateRestFromTable({
@@ -13,7 +14,8 @@ import { firstOr } from "./utils";
 // });
 
 export const breedsApp = new Elysia({ prefix: "/breeds" })
-    .get("/", () =>
+    .use(database())
+    .get("/", ({ db }) =>
         db
             .select()
             .from(breeds)
@@ -21,7 +23,7 @@ export const breedsApp = new Elysia({ prefix: "/breeds" })
     )
     .post(
         "/",
-        ({ body }) =>
+        ({ db, body }) =>
             db.insert(breeds).values(body).returning().then(firstOr(201)),
         { body: createInsertSchema(breeds) }
     )
@@ -30,7 +32,7 @@ export const breedsApp = new Elysia({ prefix: "/breeds" })
             id: t.Number(),
         }),
     })
-    .get("/:id", ({ params: { id } }) =>
+    .get("/:id", ({ db, params: { id } }) =>
         db
             .select()
             .from(breeds)
@@ -38,12 +40,12 @@ export const breedsApp = new Elysia({ prefix: "/breeds" })
             .where(eq(breeds.id, id))
             .then(firstOr())
     )
-    .delete("/:id", ({ params: { id } }) =>
+    .delete("/:id", ({ db, params: { id } }) =>
         db.delete(breeds).where(eq(breeds.id, id)).returning().then(firstOr())
     )
     .patch(
         "/:id",
-        ({ params: { id }, body }) =>
+        ({ db, params: { id }, body }) =>
             db
                 .update(breeds)
                 .set(body)
