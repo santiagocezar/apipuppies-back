@@ -1,17 +1,9 @@
-import { breeds, users } from "@db";
+import { breeds } from "@db";
 import { eq } from "drizzle-orm";
 import { createInsertSchema, createUpdateSchema } from "drizzle-zod";
 import Elysia, { status, t } from "elysia";
 import { firstOr } from "./utils";
 import { database } from "../lib/dbinstance";
-// import { generateRestFromTable } from "../utils/rest";
-
-// const desc = generateRestFromTable({
-//     name: "raza",
-//     namePlural: "razas",
-//     table: breeds,
-//     create: "El nombre debe ser único",
-// });
 
 export const breedsApp = new Elysia({ prefix: "/breeds" })
     .use(database())
@@ -24,7 +16,11 @@ export const breedsApp = new Elysia({ prefix: "/breeds" })
     .post(
         "/",
         ({ db, body }) =>
-            db.insert(breeds).values(body).returning().then(firstOr(201)),
+            db
+                .insert(breeds)
+                .values(body)
+                .returning()
+                .then(firstOr(201, 500, "Failed to save object")),
         { body: createInsertSchema(breeds) }
     )
     .guard({

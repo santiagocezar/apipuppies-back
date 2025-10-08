@@ -1,3 +1,4 @@
+// @ts-nocheck
 import type { AnySQLiteTable } from "drizzle-orm/sqlite-core";
 import {
     createInsertSchema,

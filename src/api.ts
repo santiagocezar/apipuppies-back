@@ -2,8 +2,8 @@ import { Elysia } from "elysia";
 import { breedsApp } from "./routes/breeds";
 import { petsApp } from "./routes/pets";
 import { authApp } from "./routes/auth";
-import { openapi } from "@elysiajs/openapi";
-import { deviceApp } from "./routes/device";
+import { devicesApp } from "./routes/devices";
+import { routinesApp } from "./routes/routines";
 
 export const api = new Elysia({ prefix: "/api" })
     // .use(openapi())
@@ -15,4 +15,5 @@ export const api = new Elysia({ prefix: "/api" })
     .use(authApp)
     .use(breedsApp)
     .use(petsApp)
-    .use(deviceApp);
+    .use(routinesApp)
+    .use(devicesApp);

@@ -45,7 +45,7 @@ export const petsApp = new Elysia({ prefix: "/pets" })
                     ownerId: user,
                 })
                 .returning()
-                .then(firstOr(201)),
+                .then(firstOr(201, 500, "Failed to save object")),
         { body: insertSchema }
     )
     .guard({

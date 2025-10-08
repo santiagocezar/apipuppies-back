@@ -1,26 +1,40 @@
-import type { SQL } from "drizzle-orm";
-import { status } from "elysia";
-import type { Context, Env, HonoRequest, Input, MiddlewareHandler } from "hono";
-import type { InputToDataByTarget, ParamKeys } from "hono/types";
+import { ElysiaCustomStatusResponse, status } from "elysia";
 
-// type FilterOptions<P extends string = "/", I extends Input["out"] = {}> = {
-//     param: Partial<Record<ParamKeys<P>, SQL>>;
-// } & (I extends {
-//     query: infer R;
-// }
-//     ? { query: Partial<Record<keyof R, SQL>> }
-//     : {});
-
-// function filterFrom<P extends string = "/", I extends Input["out"] = {}>(
-//     req: HonoRequest<P, I>,
-//     opts: FilterOptions<P, I>
-// ): SQL {}
-
-export function firstOr<T>(
-    statusOk = 200,
-    statusError = 404,
-    messageError = "Not Found"
-) {
+export function firstOr<T>(): ([v]: T[]) =>
+    | ElysiaCustomStatusResponse<200, NonNullable<T>>
+    | ElysiaCustomStatusResponse<404, "Not Found">;
+export function firstOr<
+    T,
+    Ok extends number,
+    Error extends number,
+    Message extends string
+>(
+    statusOk: Ok,
+    statusError: Error,
+    message: Message
+): ([v]: T[]) =>
+    | ElysiaCustomStatusResponse<Ok, NonNullable<T>>
+    | ElysiaCustomStatusResponse<Error, Message>;
+export function firstOr<
+    T,
+    Ok extends number,
+    Error extends number,
+    Message extends string
+>(
+    statusOk?: Ok,
+    statusError?: Error,
+    errorMessage?: Message
+): ([v]: T[]) =>
+    | ElysiaCustomStatusResponse<Ok, NonNullable<T>>
+    | ElysiaCustomStatusResponse<Error, Message> {
     return ([v]: T[]) =>
-        v ? status(statusOk, v) : status(statusError, messageError);
+        v
+            ? (status(statusOk ?? 200, v) as ElysiaCustomStatusResponse<
+                  Ok,
+                  NonNullable<T>
+              >)
+            : (status(
+                  statusError ?? 404,
+                  errorMessage ?? "Not Found"
+              ) as ElysiaCustomStatusResponse<Error, Message>);
 }

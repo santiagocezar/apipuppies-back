@@ -1,5 +1,4 @@
 import { drizzle, DrizzleD1Database, type AnyD1Database } from "drizzle-orm/d1";
-import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
 import Elysia, { status } from "elysia";
 
 export type Database = DrizzleD1Database;

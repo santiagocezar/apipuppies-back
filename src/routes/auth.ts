@@ -16,22 +16,16 @@ const Payload = z.object({
 });
 type Payload = z.output<typeof Payload>;
 
-const LoginInfo = z.object({
-    username: z.string(),
-    password: z.string(),
+const LoginInfo = t.Object({
+    username: t.String(),
+    password: t.String(),
 });
 
 const User = createInsertSchema(users);
 
-// const p = new Uint8Array(16);
-// crypto.getRandomValues(p);
-
 const ADMIN_PASSWD = "admin123"; //p.toHex();
 
 console.log(`Admin Password: ${ADMIN_PASSWD}`);
-
-const ACCESS_EXP = 60 * 15; // 15 minutos
-const REFRESH_EXP = 60 * 60 * 24 * 7; // 7 días
 
 async function auth(
     db: Database,
@@ -134,11 +128,121 @@ export const authApp = new Elysia({ name: "auth", prefix: "/auth" })
 
                 return { access, refresh };
             } else {
-                return status(401);
+                return status(401, "Unauthorized");
             }
         },
-        { body: LoginInfo }
+        {
+            detail: {
+                description:
+                    "Iniciar sesión con `username` y `password`, devuelve un JWT de access y otro de refresh",
+            },
+            body: LoginInfo,
+            response: {
+                200: t.Object({
+                    access: t.String(),
+                    refresh: t.String(),
+                }),
+                401: t.Literal("Unauthorized"),
+            },
+        }
     )
+    .post(
+        "/refresh",
+        async ({ db, body: { refresh }, secret }) => {
+            const payload = jwtVerifyFromHeader(refresh, secret);
+            if (!payload || payload.type !== "refresh")
+                return status(401, "Unauthorized");
+
+            const jti = new Uint8Array(32);
+
+            jti.setFromHex(payload.jti);
+
+            const [{ active } = {}] = await db
+                .select({ active: sessions.active })
+                .from(sessions)
+                .where(eq(sessions.id, Buffer.from(jti)));
+
+            if (!active) return status(401, "Unauthorized");
+
+            const access = forgeAccessToken(payload.user, jti, secret);
+
+            return { access };
+        },
+        {
+            body: t.Object({
+                refresh: t.String(),
+            }),
+            detail: {
+                description: "Refrescar el token de acceso",
+            },
+            response: {
+                200: t.Object({
+                    access: t.String(),
+                }),
+                401: t.Literal("Unauthorized"),
+            },
+        }
+    )
+    .post(
+        "/revoke",
+        async ({ db, headers: { authorization }, secret }) => {
+            const payload = jwtVerifyFromHeader(authorization, secret);
+            if (!payload) return status(401, "Unauthorized");
+
+            const jti = new Uint8Array(32);
+
+            jti.setFromHex(payload.jti);
+
+            await db
+                .update(sessions)
+                .set({
+                    active: false,
+                })
+                .where(eq(sessions.id, Buffer.from(jti)));
+
+            return true;
+        },
+        {
+            detail: {
+                description:
+                    "Deshabilitar el token de refresh, llamar al cerrar sesión",
+            },
+            body: t.Object({
+                refresh: t.String(),
+            }),
+            headers: t.Object({
+                authorization: t.String(),
+            }),
+            response: {
+                200: t.Literal(true),
+                401: t.Literal("Unauthorized"),
+            },
+        }
+    )
+    .macro("isSignIn", {
+        resolve({ status, headers: { authorization }, secret }) {
+            const payload = jwtVerifyFromHeader(authorization, secret);
+            if (!payload)
+                return status(401, {
+                    success: false,
+                    message: "Unauthorized",
+                });
+
+            return {
+                user: payload.user,
+            };
+        },
+    })
+    .macro("admin", {
+        isSignIn: true,
+        resolve({ status, user }) {
+            if (user !== 0)
+                return status(401, {
+                    success: false,
+                    message: "Unauthorized",
+                });
+        },
+    })
     .post(
         "/register",
         async ({ db, body }) =>
@@ -146,83 +250,16 @@ export const authApp = new Elysia({ name: "auth", prefix: "/auth" })
                 .insert(users)
                 .values(body)
                 .returning()
-                .then(firstOr(200, 400, "Couldn't create user")),
-        { body: User }
-    )
-    .post("/refresh", async ({ db, headers: { authorization }, secret }) => {
-        const payload = jwtVerifyFromHeader(authorization, secret);
-        if (!payload || payload.type !== "refresh")
-            return status(401, {
-                success: false,
-                message: "Unauthorized",
-            });
-
-        const jti = new Uint8Array(32);
-
-        jti.setFromHex(payload.jti);
-
-        const [{ active } = {}] = await db
-            .select({ active: sessions.active })
-            .from(sessions)
-            .where(eq(sessions.id, Buffer.from(jti)));
-
-        if (!active)
-            return status(401, {
-                success: false,
-                message: "Unauthorized",
-            });
-
-        const access = forgeAccessToken(payload.user, jti, secret);
-
-        return { access };
-    })
-    .post("/revoke", async ({ db, headers: { authorization }, secret }) => {
-        const payload = jwtVerifyFromHeader(authorization, secret);
-        if (!payload)
-            return status(401, {
-                success: false,
-                message: "Unauthorized",
-            });
-
-        const jti = new Uint8Array(32);
-
-        jti.setFromHex(payload.jti);
-
-        await db
-            .update(sessions)
-            .set({
-                active: false,
-            })
-            .where(eq(sessions.id, Buffer.from(jti)));
-
-        return "Token revoked";
-    })
-    .macro({
-        isSignIn: {
-            resolve({ status, headers: { authorization }, secret }) {
-                const payload = jwtVerifyFromHeader(authorization, secret);
-                if (!payload)
-                    return status(401, {
-                        success: false,
-                        message: "Unauthorized",
-                    });
-
-                return {
-                    user: payload.user,
-                };
+                .then(firstOr(200, 400, "No se pudo crear el usuario")),
+        {
+            body: User,
+            admin: true,
+            detail: {
+                description: "Registrar un nuevo usuario (solo admin)",
             },
-        },
-    });
-
-// export const getUserId = new Elysia()
-//     .use(authApp)
-//     .guard({
-//         isSignIn: true,
-//     })
-//     .resolve(({ headers: { authorization }, secret }) => {
-//         const payload = jwtVerifyFromHeader(authorization, secret);
-//         return {
-//             user: payload!.user,
-//         };
-//     })
-//     .as("scoped");
+            response: {
+                200: User,
+                400: t.Literal("No se pudo crear el usuario"),
+            },
+        }
+    );
