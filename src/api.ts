@@ -1,19 +1,13 @@
 import { Elysia } from "elysia";
-import { breedsApp } from "./routes/breeds";
-import { petsApp } from "./routes/pets";
-import { authApp } from "./routes/auth";
-import { devicesApp } from "./routes/devices";
-import { routinesApp } from "./routes/routines";
+import { breedsRoute } from "./routes/breeds";
+import { petsRoute } from "./routes/pets";
+import { authRoute } from "./routes/auth";
+import { routinesRoute } from "./routes/routines";
+import { adminRoute } from "./routes/admin";
 
 export const api = new Elysia({ prefix: "/api" })
-    // .use(openapi())
-    .onError(({ error, code }) => {
-        if (code === "NOT_FOUND") return;
-
-        console.error(error);
-    })
-    .use(authApp)
-    .use(breedsApp)
-    .use(petsApp)
-    .use(routinesApp)
-    .use(devicesApp);
+    .use(authRoute)
+    .use(breedsRoute)
+    .use(petsRoute)
+    .use(routinesRoute)
+    .use(adminRoute);

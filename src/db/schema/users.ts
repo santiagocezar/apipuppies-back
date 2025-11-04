@@ -3,6 +3,7 @@ import { int, numeric, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { routines } from "./routines";
 import { breeds } from "./breeds";
 import { pets } from "./pets";
+import { devices } from "./devices";
 
 export const users = sqliteTable("users", {
     id: int().primaryKey({ autoIncrement: true }),
@@ -13,6 +14,7 @@ export const users = sqliteTable("users", {
 
 export const usersRelations = relations(users, ({ one, many }) => ({
     pets: many(pets),
+    devices: many(devices),
 }));
 
 export type UserInsert = typeof users.$inferInsert;

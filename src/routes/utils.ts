@@ -1,4 +1,6 @@
+import type { AnySQLiteTable, SQLiteTable } from "drizzle-orm/sqlite-core";
 import { ElysiaCustomStatusResponse, status } from "elysia";
+import type { StandardSchemaV1 } from "@standard-schema/spec";
 
 export function firstOr<T>(): ([v]: T[]) =>
     | ElysiaCustomStatusResponse<200, NonNullable<T>>
@@ -38,3 +40,14 @@ export function firstOr<
                   errorMessage ?? "Not Found"
               ) as ElysiaCustomStatusResponse<Error, Message>);
 }
+
+interface CRUDOptions<T extends AnySQLiteTable> {
+    selectSchema: StandardSchemaV1<unknown, T["$inferSelect"]>;
+    insertSchema: StandardSchemaV1<unknown, T["$inferInsert"]>;
+    updateSchema: StandardSchemaV1<unknown, Partial<T["$inferInsert"]>>;
+}
+
+export function crud<T extends AnySQLiteTable>(
+    table: T,
+    options: CRUDOptions<T>
+) {}

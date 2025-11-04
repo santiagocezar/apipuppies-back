@@ -17,7 +17,7 @@ export const pets = sqliteTable("pets", {
     exercise: int().notNull(),
 
     breedId: int().notNull(),
-    ownerId: int(),
+    ownerId: int().notNull(),
     activeRoutineId: int(),
 });
 
@@ -35,11 +35,6 @@ export const petsRelations = relations(pets, ({ one, many }) => ({
         references: [routines.id],
     }),
     routine: many(routines),
-    // devices: one(pets, {
-    //     fields: [pets.id],
-    //     references: [devices.petId],
-    // }),
-    devices: many(devices), // TODO: why many to one
 }));
 
 export type PetInsert = typeof pets.$inferInsert;

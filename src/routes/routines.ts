@@ -5,22 +5,42 @@ import { devices } from "@db/schema/devices";
 import type { BatchItem } from "drizzle-orm/batch";
 import { database } from "../lib/dbinstance";
 import { getActualSchedule } from "../lib/schedule";
+import { firstOr } from "./utils";
+import { auth } from "@lib/auth";
+import { createSelectSchema } from "drizzle-typebox";
 
-const reportSchema = t.Object({
-    devId: t.Integer(),
-    plate: t.Integer(),
-    tank: t.Integer(),
+const ReportSchema = t.Object({
+    routineId: t.Number(),
+    plate: t.Number(),
+    tank: t.Number(),
 });
 
-const activitySchema = t.Object({
-    id: t.Integer(),
-    plateStart: t.Integer(),
-    plateFinal: t.Integer(),
-    tankStart: t.Integer(),
-    tankFinal: t.Integer(),
-    routineId: t.Integer(),
-    done: t.Boolean(),
+const ActivitySchema = createSelectSchema(activities);
+
+const SelectDeviceSchema = createSelectSchema(devices);
+const InsertDeviceSchema = t.Object({ id: t.Number() });
+// const UpdateDevice = createUpdateSchema(devices);
+
+const InsertRoutineSchema = t.Object({
+    goal: t.UnionEnum(["decrease", "balance", "increase"]),
+    servingSize: t.Number({
+        description: "Tamaño de la porción en gramos",
+    }),
+    schedule: t.Array(t.Number(), {
+        description: "Lista de segundos desde las 00:00",
+    }),
+    utcOffset: t.Number({
+        description:
+            "Zona horaria, diferencia con UTC en segundos, ejemplo aplicado a Argentina",
+        examples: [-10800],
+    }),
+    forPetId: t.Number(),
 });
+const SelectRoutineSchema = t.Object({
+    ...createSelectSchema(routines).properties,
+    ...InsertRoutineSchema.properties,
+});
+// const UpdateDevice = createUpdateSchema(devices);
 
 const windowOffset = -30 * 1000;
 
@@ -28,23 +48,109 @@ function isTuple<T extends unknown>(array: T[]): array is [T, ...T[]] {
     return array.length > 0;
 }
 
-export const routinesApp = new Elysia({ prefix: "/routines" })
+export const routinesRoute = new Elysia({ prefix: "/devices" })
     .model({
-        Activity: activitySchema,
+        Activity: ActivitySchema,
     })
     .use(database())
+    .use(auth)
     .guard({
-        params: t.Object({
-            id: t.Integer(),
-        }),
+        isSignIn: true,
+        detail: {
+            tags: ["Dispositivo y rutinas"],
+        },
     })
     .post(
-        "/:id/report",
-        async ({
-            db,
-            body: { devId, plate, tank },
-            params: { id: routineId },
-        }) => {
+        "/",
+        ({ db, body: { id }, user }) =>
+            db
+                .insert(devices)
+                .values({
+                    id,
+                    plate: 100,
+                    tank: 100,
+                    ownerId: user,
+                })
+                .returning()
+                .then(firstOr(201, 500, "No se pudo registrar el dispositivo")),
+        {
+            detail: {
+                summary: "Registrar dispositivo",
+            },
+            isAdmin: true,
+            body: InsertDeviceSchema,
+            response: {
+                201: SelectDeviceSchema,
+                500: t.Literal("No se pudo registrar el dispositivo"),
+            },
+        }
+    )
+    .get(
+        "/:devId/routine",
+        async ({ status, db, params: { devId } }) =>
+            db
+                .select()
+                .from(devices)
+                .where(eq(devices.id, devId))
+                .innerJoin(routines, eq(routines.id, devices.activeRoutineId))
+                .then(
+                    (d) =>
+                        d[0]?.routines ??
+                        status(404, "No hay ninguna rutina activa")
+                ),
+        {
+            detail: {
+                summary: "Obtener rutina activa",
+            },
+            params: t.Object({
+                devId: t.Number(),
+            }),
+            response: {
+                200: SelectRoutineSchema,
+                404: t.Literal("No hay ninguna rutina activa"),
+            },
+        }
+    )
+    .put(
+        "/:devId/routine",
+        async ({ status, user, db, body, params: { devId } }) => {
+            const [routine] = await db
+                .insert(routines)
+                .values({ ownerId: user, ...body })
+                .returning();
+
+            if (!routine) return status(500, "No se pudo actualizar la rutina");
+
+            await db
+                .update(devices)
+                .set({
+                    activeRoutineId: routine.id,
+                })
+                .where(eq(devices.id, devId))
+                .returning();
+
+            return routine;
+        },
+        {
+            detail: {
+                summary: "Cambiar la rutina activa",
+                description:
+                    "Se registra una nueva rutina, para preservar la anterior y" +
+                    "que el dispositivo reconozca que hubo un cambio.",
+            },
+            params: t.Object({
+                devId: t.Number(),
+            }),
+            body: InsertRoutineSchema,
+            response: {
+                200: SelectRoutineSchema,
+                500: t.Literal("No se pudo actualizar la rutina"),
+            },
+        }
+    )
+    .post(
+        "/:devId/routine/report",
+        async ({ db, body: { routineId, plate, tank }, params: { devId } }) => {
             // actualizamos el estado del dispositivo, y obtenemos los otros datos
             const [dev] = await db
                 .update(devices)
@@ -142,9 +248,14 @@ export const routinesApp = new Elysia({ prefix: "/routines" })
         },
         {
             detail: {
-                description: "Reportar cambios en el estado del comedero",
+                summary: "Reportar actividad",
+                description:
+                    "Reportar cambios en el estado del comedero, usado principalmente por la ESP32",
             },
-            body: reportSchema,
+            params: t.Object({
+                devId: t.Number(),
+            }),
+            body: ReportSchema,
             response: {
                 200: t.Boolean({
                     description: "`true` si inicia una nueva actividad",
@@ -156,19 +267,30 @@ export const routinesApp = new Elysia({ prefix: "/routines" })
         }
     )
     .get(
-        "/:id/status",
-        async ({ db, params: { id } }) => {
+        "/:devId/routine/status",
+        async ({ status, db, params: { devId } }) => {
             // queremos saber si se cumplieron las rutinas diarias definidas por el usuario
+
+            // actualizamos el estado del dispositivo, y obtenemos los otros datos
+            const [dev] = await db
+                .select({ routineId: devices.activeRoutineId })
+                .from(devices)
+                .where(eq(devices.id, devId));
+
+            if (!dev) return status(404, "Dispositivo inexistente");
+
+            // si no hay rutina activa, retornamos un null
+            if (dev.routineId == null) return null;
 
             // carga los detalles de la rutina
             const [routine] = await db
                 .select()
                 .from(routines)
-                .where(eq(routines.id, id))
+                .where(eq(routines.id, dev.routineId))
                 .limit(1);
 
             // obvio, si no existe, chau
-            if (!routine) return status(404, "Rutina inexistente o incompleta");
+            if (!routine) return status(404, "La rutina no existe");
 
             const { schedule } = getActualSchedule(routine);
 
@@ -197,26 +319,32 @@ export const routinesApp = new Elysia({ prefix: "/routines" })
                     .limit(1);
             });
 
-            if (!isTuple(ops))
-                return status(404, "Rutina inexistente o incompleta");
+            if (!isTuple(ops)) return status(404, "La rutina no existe");
 
             return (await db.batch(ops)).map((v) => v[0] ?? null);
         },
         {
             detail: {
+                summary: "Estado rutina",
                 description:
                     "Devuelve un array con las **actividades cumplidas** o **en ejecución** para dentro de *cada uno* " +
                     "de los horarios definidos en la rutina. Para actividades **futuras**, el item es `null`",
             },
             params: t.Object({
-                id: t.Integer(),
+                devId: t.Number(),
             }),
             response: {
-                200: t.Array(t.Nullable(activitySchema), {
-                    description:
-                        "Array de `Actividad` o `null` correspondiente a cada horario",
-                }),
-                404: t.Literal("Rutina inexistente o incompleta"),
+                200: t.Union([
+                    t.Array(t.Nullable(ActivitySchema), {
+                        description:
+                            "Array de `Actividad` o `null` correspondiente a cada horario",
+                    }),
+                    t.Null(),
+                ]),
+                404: t.UnionEnum([
+                    "Dispositivo inexistente",
+                    "La rutina no existe",
+                ]),
             },
         }
     );

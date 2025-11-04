@@ -1,108 +1,32 @@
-import { sign, verify } from "jsonwebtoken";
 import Elysia, { status, t } from "elysia";
-import z from "zod";
 import { sessions, users } from "@db";
 import { eq } from "drizzle-orm";
 import { firstOr } from "./utils";
 import { createInsertSchema } from "drizzle-zod";
-import { compare } from "../utils/password";
 import { keychain } from "../lib/key";
+import { auth } from "../lib/auth";
 import { database, type Database } from "../lib/dbinstance";
-
-const Payload = z.object({
-    type: z.literal(["refresh", "access"]),
-    jti: z.string(),
-    user: z.int(),
-});
-type Payload = z.output<typeof Payload>;
 
 const LoginInfo = t.Object({
     username: t.String(),
     password: t.String(),
 });
 
-const User = createInsertSchema(users);
-
-const ADMIN_PASSWD = "admin123"; //p.toHex();
-
-console.log(`Admin Password: ${ADMIN_PASSWD}`);
-
-async function auth(
-    db: Database,
-    username: string,
-    password: string
-): Promise<number | null> {
-    console.log({ username, password });
-    if (username === "admin" && password === ADMIN_PASSWD) {
-        return 0;
-    }
-
-    const [{ hash, id } = {}] = await db
-        .select({ hash: users.password, id: users.id })
-        .from(users)
-        .where(eq(users.username, username));
-
-    if (hash && id && (await compare(hash, password))) {
-        return id;
-    }
-
-    return null;
-}
-
-function jwtVerifyFromHeader(
-    authorization: string | undefined,
-    secret: string
-) {
-    const token = authorization?.split("Bearer ", 2)[1];
-    if (!token) return;
-
-    const res = verify(token, secret);
-
-    console.log({ res });
-
-    const { data: payload } = Payload.safeParse(res);
-    if (!payload) return;
-
-    return payload;
-}
-
-function forgeAccessToken(user: number, jti: Uint8Array, secret: string) {
-    return sign(
-        <Payload>{
-            type: "access",
-            user,
-            jti: jti.toHex(),
-        },
-        secret,
-        {
-            expiresIn: "15m",
-        }
-    );
-}
-
-function forgeRefreshToken(user: number, jti: Uint8Array, secret: string) {
-    return sign(
-        <Payload>{
-            type: "refresh",
-            user,
-            jti: jti.toHex(),
-        },
-        secret,
-        {
-            expiresIn: "7d",
-        }
-    );
-}
-
-export const authApp = new Elysia({ name: "auth", prefix: "/auth" })
+export const authRoute = new Elysia({ prefix: "/auth" })
     .use(keychain())
     .use(database())
+    .use(auth)
+    .guard({
+        detail: {
+            tags: ["Autenticación"],
+        },
+    })
     .post(
         "/login",
-        async ({ db, body, secret }) => {
+        async ({ db, body, secret, authenticate, forgeToken }) => {
             console.log(body);
             const { username, password } = body;
-            const res = await auth(db, username, password);
+            const res = await authenticate(username, password);
 
             if (res !== null) {
                 const user = res;
@@ -111,8 +35,8 @@ export const authApp = new Elysia({ name: "auth", prefix: "/auth" })
 
                 const now = new Date();
 
-                const access = forgeAccessToken(user, jti, secret);
-                const refresh = forgeRefreshToken(user, jti, secret);
+                const access = forgeToken(user, jti, "access");
+                const refresh = forgeToken(user, jti, "refresh");
 
                 try {
                     await db.insert(sessions).values({
@@ -133,6 +57,7 @@ export const authApp = new Elysia({ name: "auth", prefix: "/auth" })
         },
         {
             detail: {
+                summary: "Iniciar sesión",
                 description:
                     "Iniciar sesión con `username` y `password`, devuelve un JWT de access y otro de refresh",
             },
@@ -148,8 +73,8 @@ export const authApp = new Elysia({ name: "auth", prefix: "/auth" })
     )
     .post(
         "/refresh",
-        async ({ db, body: { refresh }, secret }) => {
-            const payload = jwtVerifyFromHeader(refresh, secret);
+        async ({ db, body: { refresh }, verifyToken, forgeToken }) => {
+            const payload = verifyToken(refresh);
             if (!payload || payload.type !== "refresh")
                 return status(401, "Unauthorized");
 
@@ -164,7 +89,7 @@ export const authApp = new Elysia({ name: "auth", prefix: "/auth" })
 
             if (!active) return status(401, "Unauthorized");
 
-            const access = forgeAccessToken(payload.user, jti, secret);
+            const access = forgeToken(payload.user, jti, "access");
 
             return { access };
         },
@@ -173,6 +98,7 @@ export const authApp = new Elysia({ name: "auth", prefix: "/auth" })
                 refresh: t.String(),
             }),
             detail: {
+                summary: "Refrescar token",
                 description: "Refrescar el token de acceso",
             },
             response: {
@@ -185,9 +111,9 @@ export const authApp = new Elysia({ name: "auth", prefix: "/auth" })
     )
     .post(
         "/revoke",
-        async ({ db, headers: { authorization }, secret }) => {
-            const payload = jwtVerifyFromHeader(authorization, secret);
-            if (!payload) return status(401, "Unauthorized");
+        async ({ db, body: { refresh }, verifyToken }) => {
+            const payload = verifyToken(refresh);
+            if (!payload) return status(200, "Always has been");
 
             const jti = new Uint8Array(32);
 
@@ -204,62 +130,15 @@ export const authApp = new Elysia({ name: "auth", prefix: "/auth" })
         },
         {
             detail: {
+                summary: "Cerrar sesión",
                 description:
                     "Deshabilitar el token de refresh, llamar al cerrar sesión",
             },
             body: t.Object({
                 refresh: t.String(),
             }),
-            headers: t.Object({
-                authorization: t.String(),
-            }),
             response: {
-                200: t.Literal(true),
-                401: t.Literal("Unauthorized"),
-            },
-        }
-    )
-    .macro("isSignIn", {
-        resolve({ status, headers: { authorization }, secret }) {
-            const payload = jwtVerifyFromHeader(authorization, secret);
-            if (!payload)
-                return status(401, {
-                    success: false,
-                    message: "Unauthorized",
-                });
-
-            return {
-                user: payload.user,
-            };
-        },
-    })
-    .macro("admin", {
-        isSignIn: true,
-        resolve({ status, user }) {
-            if (user !== 0)
-                return status(401, {
-                    success: false,
-                    message: "Unauthorized",
-                });
-        },
-    })
-    .post(
-        "/register",
-        async ({ db, body }) =>
-            db
-                .insert(users)
-                .values(body)
-                .returning()
-                .then(firstOr(200, 400, "No se pudo crear el usuario")),
-        {
-            body: User,
-            admin: true,
-            detail: {
-                description: "Registrar un nuevo usuario (solo admin)",
-            },
-            response: {
-                200: User,
-                400: t.Literal("No se pudo crear el usuario"),
+                200: t.Union([t.Literal(true), t.Literal("Always has been")]),
             },
         }
     );

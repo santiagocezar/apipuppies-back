@@ -31,7 +31,8 @@
     "noPropertyAccessFromIndexSignature": false,
     "paths": {
       "@db": ["./src/db/"],
-      "@db/*": ["./src/db/*"] 
+      "@db/*": ["./src/db/*"],
+      "@lib/*": ["./src/lib/*"] 
     }
   },
   "files": [

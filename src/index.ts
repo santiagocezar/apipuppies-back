@@ -4,10 +4,12 @@ import { api } from "./api";
 import { database } from "./lib/dbinstance";
 import { keychain } from "./lib/key";
 import { env } from "cloudflare:workers";
+import { cors } from "@elysiajs/cors";
 
 export default new Elysia({
     adapter: CloudflareAdapter,
 })
+    .use(cors())
     .use(database(env.apipuppies_db))
     .use(keychain(env.SECRET_KEY))
     .use(api)

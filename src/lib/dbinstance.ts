@@ -1,7 +1,8 @@
 import { drizzle, DrizzleD1Database, type AnyD1Database } from "drizzle-orm/d1";
 import Elysia, { status } from "elysia";
+import * as schema from "@db/schema";
 
-export type Database = DrizzleD1Database;
+export type Database = DrizzleD1Database<typeof schema>;
 export const database = (d1?: AnyD1Database) => {
     return new Elysia({ name: "database" })
         .derive(async () => {
@@ -11,7 +12,7 @@ export const database = (d1?: AnyD1Database) => {
                     "Internal Server Error (missing DB conecction)"
                 );
 
-            const db: Database = drizzle(d1);
+            const db: Database = drizzle<typeof schema>(d1);
 
             return {
                 db,
