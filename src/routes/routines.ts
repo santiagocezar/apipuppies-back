@@ -55,7 +55,6 @@ export const routinesRoute = new Elysia({ prefix: "/devices" })
     .use(database())
     .use(auth)
     .guard({
-        isSignIn: true,
         detail: {
             tags: ["Dispositivo y rutinas"],
         },
@@ -82,69 +81,6 @@ export const routinesRoute = new Elysia({ prefix: "/devices" })
             response: {
                 201: SelectDeviceSchema,
                 500: t.Literal("No se pudo registrar el dispositivo"),
-            },
-        }
-    )
-    .get(
-        "/:devId/routine",
-        async ({ status, db, params: { devId } }) =>
-            db
-                .select()
-                .from(devices)
-                .where(eq(devices.id, devId))
-                .innerJoin(routines, eq(routines.id, devices.activeRoutineId))
-                .then(
-                    (d) =>
-                        d[0]?.routines ??
-                        status(404, "No hay ninguna rutina activa")
-                ),
-        {
-            detail: {
-                summary: "Obtener rutina activa",
-            },
-            params: t.Object({
-                devId: t.Number(),
-            }),
-            response: {
-                200: SelectRoutineSchema,
-                404: t.Literal("No hay ninguna rutina activa"),
-            },
-        }
-    )
-    .put(
-        "/:devId/routine",
-        async ({ status, user, db, body, params: { devId } }) => {
-            const [routine] = await db
-                .insert(routines)
-                .values({ ownerId: user, ...body })
-                .returning();
-
-            if (!routine) return status(500, "No se pudo actualizar la rutina");
-
-            await db
-                .update(devices)
-                .set({
-                    activeRoutineId: routine.id,
-                })
-                .where(eq(devices.id, devId))
-                .returning();
-
-            return routine;
-        },
-        {
-            detail: {
-                summary: "Cambiar la rutina activa",
-                description:
-                    "Se registra una nueva rutina, para preservar la anterior y" +
-                    "que el dispositivo reconozca que hubo un cambio.",
-            },
-            params: t.Object({
-                devId: t.Number(),
-            }),
-            body: InsertRoutineSchema,
-            response: {
-                200: SelectRoutineSchema,
-                500: t.Literal("No se pudo actualizar la rutina"),
             },
         }
     )
@@ -263,6 +199,72 @@ export const routinesRoute = new Elysia({ prefix: "/devices" })
                 400: t.Literal("La rutina no existe o no se encuentra activa"),
                 404: t.Literal("Dispositivo inexistente"),
                 500: t.Literal("No hay actividad para actualizar (imposible)"),
+            },
+        }
+    )
+    .guard({
+        isSignIn: true,
+    })
+    .get(
+        "/:devId/routine",
+        async ({ status, db, params: { devId } }) =>
+            db
+                .select()
+                .from(devices)
+                .where(eq(devices.id, devId))
+                .innerJoin(routines, eq(routines.id, devices.activeRoutineId))
+                .then(
+                    (d) =>
+                        d[0]?.routines ??
+                        status(404, "No hay ninguna rutina activa")
+                ),
+        {
+            detail: {
+                summary: "Obtener rutina activa",
+            },
+            params: t.Object({
+                devId: t.Number(),
+            }),
+            response: {
+                200: SelectRoutineSchema,
+                404: t.Literal("No hay ninguna rutina activa"),
+            },
+        }
+    )
+    .put(
+        "/:devId/routine",
+        async ({ status, user, db, body, params: { devId } }) => {
+            const [routine] = await db
+                .insert(routines)
+                .values({ ownerId: user, ...body })
+                .returning();
+
+            if (!routine) return status(500, "No se pudo actualizar la rutina");
+
+            await db
+                .update(devices)
+                .set({
+                    activeRoutineId: routine.id,
+                })
+                .where(eq(devices.id, devId))
+                .returning();
+
+            return routine;
+        },
+        {
+            detail: {
+                summary: "Cambiar la rutina activa",
+                description:
+                    "Se registra una nueva rutina, para preservar la anterior y" +
+                    "que el dispositivo reconozca que hubo un cambio.",
+            },
+            params: t.Object({
+                devId: t.Number(),
+            }),
+            body: InsertRoutineSchema,
+            response: {
+                200: SelectRoutineSchema,
+                500: t.Literal("No se pudo actualizar la rutina"),
             },
         }
     )
